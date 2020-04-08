@@ -189,7 +189,7 @@ class ReasoningEnv(gym.Env):
         selected_color = self.grid[non_selected[0]]
         for idx_pair in non_selected[1:]:
             if self.grid[idx_pair] == selected_color and ((idx_pair[0]-1, idx_pair[1]) in self.selected_element
-                                                          or (idx_pair[0], idx_pair[1]-1) in self.selected_element 
+                                                          or (idx_pair[0], idx_pair[1]-1) in self.selected_element  
                                                           or (idx_pair[0]-1, idx_pair[1]-1) in self.selected_element
                                                           or (idx_pair[0]+1, idx_pair[1]-1) in self.selected_element):
                 self.selected_element.append(idx_pair)
