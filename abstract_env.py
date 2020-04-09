@@ -2,6 +2,7 @@ import gym
 import numpy as np
 import random
 import math
+from itertools import chain
 from plot_functions import plot_single_image, plot_task
 
 
@@ -34,38 +35,49 @@ class ReasoningEnv(gym.Env):
         self.current_demo_colormaps, self.current_demo_inv_colormaps = [], []
         self.current_test_colormaps, self.current_test_inv_colormaps = [], []
 
-        self.done = False
+        self.max_per_demo = 500
+        self.done_current_demo = False
 
         self.observation_space = gym.spaces.Box(shape=(self.dimX, self.dimY), low=0, high=8)
         self.action_space = gym.spaces.Discrete(9)
 
     def reset(self):
-        plot_task(self.current_task)
+        # plot_task(self.current_task)
         self.current_demo_task = random.sample(self.current_task['train'], 1)[0]
         self.current_demo_colormaps, self.current_demo_inv_colormaps, unique_test_colors = [], [], []
-        self.current_task_dims = []
+        self.current_task_dims, in_out_similarities, pre_padding_grid_sizes = [], [], []
         for task in self.current_task['train']:
-            self.current_task_dims.append((task['input'].shape, task['output'].shape))
+            self.current_task_dims.append((np.array(task['input']).shape, np.array(task['output']).shape))
             task['input'], task['output'], colmap, inv_colmap, demo_utc = self.squash_colors(
                 [np.array(task['input'], dtype=np.int), np.array(task['output'], dtype=np.int)])
             self.current_demo_colormaps.append(colmap)
             self.current_demo_inv_colormaps.append(inv_colmap)
             unique_test_colors.append(demo_utc)
-        unique_test_colors = np.unique(unique_test_colors)
+            if task['input'].shape == task['output'].shape:
+                # if more than 50% of the input and output grid are equal, and the shapes match, copy the input grid to the
+                # working output grid
+                in_out_similarities.append(np.count_nonzero(np.equal(task['input'], task['output']) == True))
+            else:
+                in_out_similarities.append(0)
+            pre_padding_grid_sizes.append(task['output'].shape[0] * task['output'].shape[1])
+
+        unique_test_colors = np.unique(chain.from_iterable(unique_test_colors))
         for task in self.current_task['test']:
             task['input'], colmap, inv_colmap = self.squash_colors(
                 [np.array(task['input'], dtype=np.int)], single_input=True, test_unique_colors=unique_test_colors)
             self.current_test_colormaps.append(colmap)
             self.current_test_inv_colormaps.append(inv_colmap)
-        plot_task(self.current_task)
 
+        pre_padding_grid_size = self.current_demo_task['input'].shape
         self.grid = self.pad_array(self.current_demo_task['input'])
-        plot_single_image(self.grid, padded=True)
         self.grid_selection_history = np.logical_or(self.grid == self.background_color, self.grid == 10).astype(int)
 
         self.desired_output_grid = self.pad_array(self.current_demo_task['output'])
-        plot_single_image(self.desired_output_grid, padded=True)
         self.working_output_grid, self.gridDims = self.determine_output_bounds()
+
+        if all([in_out_similarities[i] > 0.7 * pre_padding_grid_sizes[i]
+                for i in range(len(in_out_similarities))]):
+            self.working_output_grid = np.copy(self.grid)
 
         self.done = False
 
@@ -84,7 +96,8 @@ class ReasoningEnv(gym.Env):
 
     def determine_output_bounds(self):
         if all([demo_dims[0] == demo_dims[1] for demo_dims in self.current_task_dims]):
-            return self.pad_array(np.zeros(shape=self.grid.shape)), self.grid.shape
+            return self.pad_array(np.zeros(shape=self.current_demo_task['input'].shape)), \
+                   self.current_demo_task['input'].shape
         elif len(set([demo_dims[1] for demo_dims in self.current_task_dims])) == 1:
             return self.pad_array(np.zeros(shape=self.current_task['train'][0]['output'].shape)), \
                    self.current_task['train'][0]['output'].shape
@@ -103,21 +116,27 @@ class ReasoningEnv(gym.Env):
 
         # we iterate through the elements in our grid (which is part of the input observation for our network)
         self.selected_element = self.get_next_selected_element()
+        if self.selected_element is None and self.selection_on_working_grid:
+            self.grid = self.working_output_grid
+            self.selected_element = self.get_next_selected_element()
+            self.grid_selection_history = np.logical_or(self.grid == self.background_color, self.grid == 10).astype(int)
+            self.selection_on_working_grid = True
         # the core coord is a random cell (usually top-left) from the selected element, serves as a local coordiante
         # base (0,0) which offset is added to
-        core_coord_x, core_coord_y = self.selected_element[0]
 
         sec_action_input = action[1] # x coordinate - domain -30,+30
         third_action_input = action[2] # y coordinate - domain -30,+30
         fourth_action_input = action[3] # color # domain 0,10
 
         if action_name == "copy":
+            core_coord_x, core_coord_y = self.selected_element[0]
             new_core_coord_x, new_core_coord_y = sec_action_input, third_action_input
             for coords in self.selected_element:
                 self.working_output_grid[new_core_coord_x+coords[0], new_core_coord_y+coords[1]] = \
                     self.grid[core_coord_x+coords[0], core_coord_y+coords[1]]
 
         if action_name == "recolor":
+            core_coord_x, core_coord_y = self.selected_element[0]
             # if x,y == 0,0 -> flood fill the selected element, else treat as offset and recolor single element
             if (core_coord_x, core_coord_y) == (0,0):
                 for coords in self.selected_element:
@@ -129,6 +148,7 @@ class ReasoningEnv(gym.Env):
                         fourth_action_input
 
         if action_name == "remove":
+            core_coord_x, core_coord_y = self.selected_element[0]
             for coords in self.selected_element:
                 self.working_output_grid[core_coord_x + coords[0], core_coord_y + coords[1]] = self.background_color
 
@@ -137,6 +157,7 @@ class ReasoningEnv(gym.Env):
             self.count_memory_idx = self.count_memory_idx % self.countDim
 
         if action_name == "move":
+            core_coord_x, core_coord_y = self.selected_element[0]
             new_core_coord_x, new_core_coord_y = sec_action_input, third_action_input
             for coords in self.selected_element:
                 self.working_output_grid[new_core_coord_x + coords[0], new_core_coord_y + coords[1]] = \
@@ -182,21 +203,27 @@ class ReasoningEnv(gym.Env):
             self.done = True
 
     def get_next_selected_element(self):
-        old_core_coord_x, old_core_coord_y = self.selected_element[0]
-        selected_element = []
+        if self.selection_on_working_grid:
+            return None
+        selected_element, selected_set = [], set()
         non_selected = np.argwhere(self.grid == 0)
-        self.selected_element.append(non_selected[0])
-        selected_color = self.grid[non_selected[0]]
+        if non_selected.shape[0] == 0:
+            return None
+        selected_element.append(non_selected[0])
+        selected_set.add((non_selected[0][0], non_selected[0][1]))
+        selected_color = self.grid[non_selected[0][0], non_selected[0][1]]
         for idx_pair in non_selected[1:]:
-            if self.grid[idx_pair] == selected_color and ((idx_pair[0]-1, idx_pair[1]) in self.selected_element
-                                                          or (idx_pair[0], idx_pair[1]-1) in self.selected_element  
-                                                          or (idx_pair[0]-1, idx_pair[1]-1) in self.selected_element
-                                                          or (idx_pair[0]+1, idx_pair[1]-1) in self.selected_element):
-                self.selected_element.append(idx_pair)
-            if idx_pair[0] > self.selected_element[-1][0]+1:
+            if self.grid[idx_pair[0], idx_pair[1]] == selected_color and ((idx_pair[0]-1, idx_pair[1]) in selected_set
+                                                          or (idx_pair[0], idx_pair[1]-1) in selected_set
+                                                          or (idx_pair[0]-1, idx_pair[1]-1) in selected_set
+                                                          or (idx_pair[0]+1, idx_pair[1]-1) in selected_set):
+                selected_element.append(idx_pair)
+                selected_set.add((idx_pair[0],idx_pair[1]))
+                self.grid_selection_history[idx_pair[0], idx_pair[1]] = 1
+            if idx_pair[0] > selected_element[-1][0]+1:
                 break
 
-        return self.selected_element
+        return selected_element
 
     def valid_primary_actions(self):
         if self.selection_on_working_grid:
@@ -211,8 +238,8 @@ class ReasoningEnv(gym.Env):
             return [0], [0]
 
     def render(self):
-        plot_task(self.current_task)
-        plot_single_image(self.grid)
+        plot_single_image(self.grid, padded=True)
+        plot_single_image(self.working_output_grid, padded=True)
 
     def pad_array(self, array):
         x_pad = self.dimX - array.shape[0]
@@ -239,9 +266,9 @@ class ReasoningEnv(gym.Env):
             colormap[color] = color_index
             inverse_colormap[color_index] = color
             color_index += 1
-        for color in unique_out_colors: # identify function for colors uniqe to output
-            colormap[color] = color
-            inverse_colormap[color] = color
+        for u_color in unique_out_colors: # identify function for colors unique to output
+            colormap[u_color] = u_color
+            inverse_colormap[u_color] = u_color
 
         def map_func(x):
             return colormap[x]
