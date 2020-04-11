@@ -23,15 +23,15 @@ test_path = data_path / 'test'
 # input: 30x30 grid
 
 # Action Space
-#   copy: (30x, 30y) - 0 means current object, else bounding box
-#   recolor: (30x, 30y, 10color) - means coordiante & color
-#   remove: - means removing the highlighted element equiv. to setting to background color
-#   count: (30x, 30y) - 0 means counting the current element, else color in bounding box
-#   move: (30x, 30y) - move to x/y coordinate
-#   mirror: (top, right, bottom, left) - axis, mirrors in place (in bounding box)
-#   resize_output_grid: (30x, 30y) - hard coded for most examples
-#   none: do nothing / skip highlighted element
-#   done: - action to be submitted when done
+#   0 - copy: (30x, 30y) - 0 means current object, else bounding box
+#   1 - recolor: (30x, 30y, 10color) - means coordiante & color
+#   2 - remove: - means removing the highlighted element equiv. to setting to background color
+#   3 - count: (30x, 30y) - 0 means counting the current element
+#   4 - move: (30x, 30y) - move to x/y coordinate
+#   5 - mirror: (top, right, bottom, left) - axis, mirrors in place (in bounding box)
+#   6 - resize_output_grid: (30x, 30y) - hard coded for most examples
+#   7 - none: do nothing / skip highlighted element
+#   8 - done: - action to be submitted when done
 
 tasks = []
 for file in os.listdir(training_path):
@@ -40,6 +40,10 @@ for file in os.listdir(training_path):
 
 training_iterations = 50
 env = ReasoningEnv(tasks=tasks)
+available_primary_actions = [0,1,2,3,4,5,6,7,8]
+available_secondary_actions = np.arange(-29, 30,)
+available_third_actions = np.arange(-29, 30)
+available_fourth_actions = np.arange(0,10)
 
 start_time = time.time()
 for iteration in range(training_iterations):
@@ -51,11 +55,17 @@ for iteration in range(training_iterations):
         for _ in range(5):
             obs = env.reset()
             for _ in range(500):
-                elem = env.get_next_selected_element()
-                if env.done_current_demo:
+                primary_action_mask = env.primary_action_mask()
+                random_action = random.choice(list(set(available_primary_actions)-set(primary_action_mask)))
+                sec_th_fth_masks = env.dependant_action_masks(random_action)
+                scd_act = random.choice(list(set(available_secondary_actions)-set(sec_th_fth_masks[0]))) if len(sec_th_fth_masks[0]) < len(available_secondary_actions) else None
+                thi_act = random.choice(list(set(available_third_actions)-set(sec_th_fth_masks[1]))) if len(sec_th_fth_masks[1]) < len(available_third_actions) else None
+                fth_act = random.choice(list(set(available_fourth_actions)-set(sec_th_fth_masks[2]))) if len(sec_th_fth_masks[2]) < len(available_fourth_actions) else None
+                # print("actions", random_action, scd_act, thi_act, fth_act)
+                obs, rew, done, _ = env.step([random_action, scd_act, thi_act, fth_act])
+                if env.done:
                     obs = env.reset()
         print(i)
-
     break
 
     print("====> FINISHED TRAINING ITERATION ", iteration)

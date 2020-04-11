@@ -82,6 +82,8 @@ class ReasoningAutoregressiveOutput(ActionDistribution):
 
         a1 = a1_dist.sample()
         a2_terms = self._a2_distribution(a1).kl(other._a2_distribution(a1))
+        a2_dist = self._a2_distribution()
+        a2 = a2_dist.sample()
         a3_terms = self._a3.distribution(a1, a2).kl(other._a3_distribution(a1, a2))
 
         return a1_terms + a2_terms + a3_terms

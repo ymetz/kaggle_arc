@@ -5,45 +5,71 @@ import math
 from itertools import chain
 from plot_functions import plot_single_image, plot_task
 
+action_mapping = {0: "copy", 1: "recolor", 2: "remove", 3: "count", 4: "move", 5: "mirror",
+                  6: "resize_output_grid", 7: "none", 8: "done"}
 
 class ReasoningEnv(gym.Env):
 
     def __init__(self, tasks={}):
-        self.dimX, self.dimY = 30, 30
+        self.grid_height, self.grid_width = 30, 30
         self.countDim = 10 # number of counts we can save, we expect that 10 are enough for current problems
-        self.grid = np.zeros(shape=(self.dimX, self.dimY), dtype=np.int)
+        self.grid = np.zeros(shape=(self.grid_height, self.grid_width), dtype=np.int)
         self.count_memory, self.count_memory_idx = np.zeros(shape=(self.countDim,), dtype=np.int), 0
-        self.desired_output_grid = np.zeros(shape=(self.dimX, self.dimY), dtype=np.int)
-        self.working_output_grid, self.gridDims = np.zeros(shape=(self.dimX, self.dimY), dtype=np.int), \
-                                                   (self.dimX, self.dimY)
+        self.desired_output_grid = np.zeros(shape=(self.grid_height, self.grid_width), dtype=np.int)
+        self.working_output_grid, self.grid_dims = np.zeros(shape=(self.grid_height, self.grid_width), dtype=np.int), \
+                                                   (self.grid_height, self.grid_width)
         # selected elements is a list of grid indices belonging to the selected element, first element as core coord. +
         # following coordinates relative to core coord.
         self.selected_element = [(0,0)]
         # if we iterated all elements of the input grid, continue iteration on working grid
         self.selection_on_working_grid = False
-        self.grid_selection_history = np.zeros(shape=(self.dimX, self.dimY), dtype=np.int)
-        self.current_task_dims = []
+        self.grid_selection_history = np.zeros(shape=(self.grid_height, self.grid_width), dtype=np.int)
+        self.current_task_dims, self.output_size_fixed = [], False
+        self.copy_input_to_working_grid = False
 
         self.background_color = 0
 
         self.tasks = tasks
         self.current_task = random.sample(tasks, 1)[0]
         self.current_demo_task = random.sample(self.current_task['train'], 1)[0]
+        self.current_demo_task_index = 0
         self.current_test_task = random.sample(self.current_task['test'], 1)[0]
+        self.current_test_task_index = 0
 
         self.unique_test_colors = []
         self.current_demo_colormaps, self.current_demo_inv_colormaps = [], []
         self.current_test_colormaps, self.current_test_inv_colormaps = [], []
 
         self.max_per_demo = 500
-        self.done_current_demo = False
+        self.done = False
 
-        self.observation_space = gym.spaces.Box(shape=(self.dimX, self.dimY), low=0, high=8)
-        self.action_space = gym.spaces.Discrete(9)
+        self.observation_space = gym.spaces.Tuple((gym.spaces.Box(shape=(self.grid_height, self.grid_width), low=0, high=8)), gym.spaces.Discrete(10))
+        self.action_space = gym.spaces.Tuple(gym.spaces.Discrete(8), gym.spaces.Discrete(30), gym.spaces.Discrete(30))
 
     def reset(self):
-        # plot_task(self.current_task)
-        self.current_demo_task = random.sample(self.current_task['train'], 1)[0]
+        self.current_demo_task_index = (self.current_demo_task_index + 1) % len(self.current_task['train'])
+        self.current_demo_task = self.current_task['train'][self.current_demo_task_index]
+
+        pre_padding_grid_size = self.current_demo_task['input'].shape
+        self.grid = self.pad_array(self.current_demo_task['input'])
+        self.grid_selection_history = np.logical_or(self.grid == self.background_color, self.grid == 10).astype(int)
+
+        self.desired_output_grid = self.pad_array(self.current_demo_task['output'])
+        self.working_output_grid, self.grid_dims = self.determine_output_bounds()
+        self.selected_element = self.get_next_selected_element()
+
+        if self.copy_input_to_working_grid:
+            self.working_output_grid = np.copy(self.grid)
+            self.grid = self.working_output_grid
+            self.selection_on_working_grid = True
+
+        self.done = False
+
+        return self.grid
+
+    def set_current_task(self, task):
+        self.current_task = task
+
         self.current_demo_colormaps, self.current_demo_inv_colormaps, unique_test_colors = [], [], []
         self.current_task_dims, in_out_similarities, pre_padding_grid_sizes = [], [], []
         for task in self.current_task['train']:
@@ -68,23 +94,19 @@ class ReasoningEnv(gym.Env):
             self.current_test_colormaps.append(colmap)
             self.current_test_inv_colormaps.append(inv_colmap)
 
-        pre_padding_grid_size = self.current_demo_task['input'].shape
-        self.grid = self.pad_array(self.current_demo_task['input'])
-        self.grid_selection_history = np.logical_or(self.grid == self.background_color, self.grid == 10).astype(int)
-
-        self.desired_output_grid = self.pad_array(self.current_demo_task['output'])
-        self.working_output_grid, self.gridDims = self.determine_output_bounds()
-
         if all([in_out_similarities[i] > 0.7 * pre_padding_grid_sizes[i]
                 for i in range(len(in_out_similarities))]):
-            self.working_output_grid = np.copy(self.grid)
+            self.copy_input_to_working_grid = True
 
-        self.done = False
+        self.current_demo_task_index = 0
+        self.current_test_task_index = 0
 
-        return self.grid
+    def get_number_of_demo_test_in_taks(self):
+        return len(self.current_task['train']), len(self.current_task['test'])
 
-    def set_current_task(self, task):
-        self.current_task = task
+    def set_next_test_task(self):
+        self.current_test_task_index = (self.current_test_task_index+1) % len(self.current_task['test'])
+        self.current_test_task = self.current_task['test'][self.current_test_task_index]
 
     def return_grid(self, test_index):
         def map_func(x):
@@ -96,154 +118,210 @@ class ReasoningEnv(gym.Env):
 
     def determine_output_bounds(self):
         if all([demo_dims[0] == demo_dims[1] for demo_dims in self.current_task_dims]):
+            self.output_size_fixed = True
             return self.pad_array(np.zeros(shape=self.current_demo_task['input'].shape)), \
                    self.current_demo_task['input'].shape
         elif len(set([demo_dims[1] for demo_dims in self.current_task_dims])) == 1:
+            self.output_size_fixed = True
             return self.pad_array(np.zeros(shape=self.current_task['train'][0]['output'].shape)), \
                    self.current_task['train'][0]['output'].shape
         else:
-            return np.zeros(shape=(self.dimX, self.dimY)), (self.dimX, self.dimY)
+            self.output_size_fixed = False
+            return np.zeros(shape=(self.grid_height, self.grid_width)), (self.grid_height, self.grid_width)
+
+    def get_bounds(self):
+        y_pad = self.grid_height - self.grid_dims[0]
+        x_pad = self.grid_width - self.grid_dims[1]
+        top_bound = math.floor(y_pad / 2)
+        bottom_bound = self.grid_height - math.ceil(y_pad / 2)
+        left_bound = math.floor(x_pad / 2)
+        right_bound = self.grid_width - math.ceil(x_pad / 2)
+
+        return top_bound, bottom_bound, left_bound, right_bound
 
     def step(self, action):
         """Assumed format:
             action[0]: which basic action to choose
             action[1]: x coordinate if applicable
             action[2]: y coordinate if applicable
+            action[3]: color for recolor
         """
-        action_mapping = {0: "copy", 1: "recolor", 2: "remove", 3: "count", 4: "move", 5: "mirror",
-                          6: "resize_output_grid", 7: "none", 8: "done"}
         action_name = action_mapping[action[0]]
 
-        # we iterate through the elements in our grid (which is part of the input observation for our network)
-        self.selected_element = self.get_next_selected_element()
-        if self.selected_element is None and self.selection_on_working_grid:
-            self.grid = self.working_output_grid
-            self.selected_element = self.get_next_selected_element()
-            self.grid_selection_history = np.logical_or(self.grid == self.background_color, self.grid == 10).astype(int)
-            self.selection_on_working_grid = True
         # the core coord is a random cell (usually top-left) from the selected element, serves as a local coordiante
         # base (0,0) which offset is added to
 
-        sec_action_input = action[1] # x coordinate - domain -30,+30
-        third_action_input = action[2] # y coordinate - domain -30,+30
+        sec_action_input = action[1] # row coordinate - domain -30,+30
+        third_action_input = action[2] # col coordinate - domain -30,+30
         fourth_action_input = action[3] # color # domain 0,10
 
         if action_name == "copy":
-            core_coord_x, core_coord_y = self.selected_element[0]
-            new_core_coord_x, new_core_coord_y = sec_action_input, third_action_input
+            core_coord_row, core_coord_col = self.selected_element[0]
+            new_core_coord_row, new_core_coord_col = sec_action_input - core_coord_row, third_action_input - core_coord_col
+            top_bound, bottom_bound, left_bound, right_bound = self.get_bounds()
             for coords in self.selected_element:
-                self.working_output_grid[new_core_coord_x+coords[0], new_core_coord_y+coords[1]] = \
-                    self.grid[core_coord_x+coords[0], core_coord_y+coords[1]]
+                if new_core_coord_row+coords[0] < top_bound or new_core_coord_row+coords[0] >= bottom_bound \
+                        or new_core_coord_col+coords[1] < left_bound or new_core_coord_col+coords[1] >= right_bound:
+                        continue
+                self.working_output_grid[new_core_coord_row+coords[0], new_core_coord_col+coords[1]] = \
+                    self.grid[coords[0], coords[1]]
 
-        if action_name == "recolor":
-            core_coord_x, core_coord_y = self.selected_element[0]
-            # if x,y == 0,0 -> flood fill the selected element, else treat as offset and recolor single element
-            if (core_coord_x, core_coord_y) == (0,0):
+        elif action_name == "recolor":
+            # if row,col == 0,0 -> flood fill the selected element, else treat as offset and recolor single element
+            if self.selected_element is not None and (sec_action_input, third_action_input) == (0,0):
+                core_coord_row, core_coord_col = self.selected_element[0]
+                new_core_coord_row, new_core_coord_col = sec_action_input - core_coord_row, third_action_input - core_coord_col
                 for coords in self.selected_element:
-                    self.working_output_grid[new_core_coord_x + coords[0], new_core_coord_y + coords[1]] = \
+                    self.working_output_grid[new_core_coord_row + coords[0], new_core_coord_col + coords[1]] = \
                         fourth_action_input
             else:
-                for coords in self.selected_element:
-                    self.working_output_grid[core_coord_x + coords[0], core_coord_y + coords[1]] = \
-                        fourth_action_input
+                self.working_output_grid[sec_action_input, third_action_input] = fourth_action_input
 
-        if action_name == "remove":
-            core_coord_x, core_coord_y = self.selected_element[0]
+        elif action_name == "remove":
             for coords in self.selected_element:
-                self.working_output_grid[core_coord_x + coords[0], core_coord_y + coords[1]] = self.background_color
+                self.working_output_grid[coords[0], coords[1]] = self.background_color
 
-        if action_name == "count":
+        elif action_name == "count":
             self.count_memory[self.count_memory_idx] = len(self.selected_element)
-            self.count_memory_idx = self.count_memory_idx % self.countDim
+            self.count_memory_idx = (self.count_memory_idx + 1) % self.countDim
 
-        if action_name == "move":
-            core_coord_x, core_coord_y = self.selected_element[0]
-            new_core_coord_x, new_core_coord_y = sec_action_input, third_action_input
+        elif action_name == "move":
+            core_coord_row, core_coord_col = self.selected_element[0]
+            element_color = self.working_output_grid[self.selected_element[0][0],self.selected_element[0][1]]
+            new_core_coord_row, new_core_coord_col = sec_action_input - core_coord_row, third_action_input - core_coord_col
+            top_bound, bottom_bound, left_bound, right_bound = self.get_bounds()
             for coords in self.selected_element:
-                self.working_output_grid[new_core_coord_x + coords[0], new_core_coord_y + coords[1]] = \
+                self.working_output_grid[coords[0], coords[1]] = \
                     self.background_color
             for coords in self.selected_element:
-                self.working_output_grid[new_core_coord_x+coords[0], new_core_coord_y+coords[1]] = \
-                    self.grid[core_coord_x+coords[0], core_coord_y+coords[1]]
+                if new_core_coord_row+coords[0] < top_bound or new_core_coord_row+coords[0] >= bottom_bound \
+                        or new_core_coord_row+coords[1] < left_bound or new_core_coord_row+coords[1] >= right_bound:
+                        continue
+                self.working_output_grid[new_core_coord_row+coords[0], new_core_coord_row+coords[1]] = element_color
 
-        if action_name == "mirror":
-            if (sec_action_input, third_action_input) == (0,1):
+        elif action_name == "mirror":
+            if (sec_action_input, third_action_input) == (-1,0):
                 # mirror up
                 pass
-            elif (sec_action_input, third_action_input) == (0,-1):
+            elif (sec_action_input, third_action_input) == (1,0):
                 # mirror down
                 pass
-            elif (sec_action_input, third_action_input) == (-1,0):
+            elif (sec_action_input, third_action_input) == (0,-1):
                 # mirror left
                 pass
-            elif (sec_action_input, third_action_input) == (1,0):
+            elif (sec_action_input, third_action_input) == (0,1):
                 # mirror right
                 pass
             elif (sec_action_input, third_action_input) == (-1,-1):
                 # mirror top-left
                 pass
-            elif (sec_action_input, third_action_input) == (1,-1):
+            elif (sec_action_input, third_action_input) == (-1,1):
                 # mirror top-right
                 pass
-            elif (sec_action_input, third_action_input) == (-1,-1):
+            elif (sec_action_input, third_action_input) == (1,-1):
                 # mirror bottom-left
                 pass
-            elif (sec_action_input, third_action_input) == (-1,-1):
+            elif (sec_action_input, third_action_input) == (1,1):
                 # mirror bottom-right
                 pass
 
-        if action_name == "resize_output_grid":
-            self.working_output_grid, self.gridDims = np.zeros(shape=(sec_action_input, third_action_input)), \
+        elif action_name == "resize_output_grid":
+            self.working_output_grid, self.grid_dims = self.pad_array(np.zeros(shape=(sec_action_input, third_action_input))), \
                                                       (sec_action_input, third_action_input)
 
-        if action_name == "none":
+        elif action_name == "none":
             pass
 
-        if action_name == "done":
+        elif action_name == "done":
             self.done = True
 
+        # we iterate through the elements in our grid (which is part of the input observation for our network)
+        self.selected_element = self.get_next_selected_element()
+        if self.selected_element is None and not self.selection_on_working_grid:
+            self.grid = self.working_output_grid
+            self.selected_element = self.get_next_selected_element()
+            self.grid_selection_history = np.logical_or(self.grid == self.background_color, self.grid == 10).astype(int)
+            self.selection_on_working_grid = True
+
     def get_next_selected_element(self):
-        if self.selection_on_working_grid:
-            return None
-        selected_element, selected_set = [], set()
-        non_selected = np.argwhere(self.grid == 0)
-        if non_selected.shape[0] == 0:
+        # plot_single_image(self.grid)
+        selected_element, expand_set = [], set()
+        non_selected = np.argwhere(self.grid_selection_history == 0)
+        if non_selected.shape[0] == 0: #and self.selection_on_working_grid:
             return None
         selected_element.append(non_selected[0])
-        selected_set.add((non_selected[0][0], non_selected[0][1]))
+        expand_set.add((non_selected[0][0], non_selected[0][1]))
         selected_color = self.grid[non_selected[0][0], non_selected[0][1]]
-        for idx_pair in non_selected[1:]:
-            if self.grid[idx_pair[0], idx_pair[1]] == selected_color and ((idx_pair[0]-1, idx_pair[1]) in selected_set
-                                                          or (idx_pair[0], idx_pair[1]-1) in selected_set
-                                                          or (idx_pair[0]-1, idx_pair[1]-1) in selected_set
-                                                          or (idx_pair[0]+1, idx_pair[1]-1) in selected_set):
-                selected_element.append(idx_pair)
-                selected_set.add((idx_pair[0],idx_pair[1]))
-                self.grid_selection_history[idx_pair[0], idx_pair[1]] = 1
-            if idx_pair[0] > selected_element[-1][0]+1:
-                break
+        self.grid[non_selected[0][0], non_selected[0][1]] = self.background_color
+        while not not expand_set:
+            to_be_expanded = expand_set.pop()
+            for i in [-1,0,1]:
+                for j in [-1,0,1]:
+                    new_coord = (to_be_expanded[0]+i, to_be_expanded[1]+j)
+                    if new_coord[0] < 0 or new_coord[0] >= self.grid_width or new_coord[1] < 0 or new_coord[1] >= self.grid_height:
+                        continue
+                    if self.grid_selection_history[new_coord[0]][new_coord[1]] == 0 and self.grid[new_coord[0]][new_coord[1]] == selected_color:
+                        expand_set.add(new_coord)
+                        self.grid_selection_history[new_coord[0]][new_coord[1]] = 1
+                        selected_element.append(new_coord)
+
+        for elem_idx_pair in selected_element:
+            #if not self.selection_on_working_grid:
+                #self.grid[elem_idx_pair[0], elem_idx_pair[1]] = self.background_color # remove elements from working grid
+            self.grid_selection_history[elem_idx_pair[0], elem_idx_pair[1]] = 1
 
         return selected_element
 
-    def valid_primary_actions(self):
-        if self.selection_on_working_grid:
-            valid_primary_action = [0, 1, 2, 4, 5, 7, 8]
+    def primary_action_mask(self):
+        if np.array_equal(self.working_output_grid,self.desired_output_grid):
+            print("solved")
+            return [0, 1, 2, 3, 4, 5, 6, 7] # allowed: [8]
+        if self.output_size_fixed:
+            resize_action_mask = [6]
         else:
-            valid_primary_action = [0, 3, 6, 7, 8]
+            resize_action_mask = []
 
-    def valid_secondary_actions(self, action):
-        if action[0] not in [0, 1, 3, 4, 6]:
-            return [], []
+        if self.selected_element is None:
+            return [0, 2, 3, 4, 5, 7] + resize_action_mask # allowed: [1, 8]
+        elif self.selection_on_working_grid:
+            return [] + resize_action_mask # allowed: [0, 1, 2, 3, 4, 5, (6), 7, 8]
         else:
-            return [0], [0]
+            return [1, 2, 4, 5] + resize_action_mask # allowed: [0, 3, 6, 7, 8]
+
+    def dependant_action_masks(self, primary_action):
+        # if 2:remove, 7:none, 8:done, no followup action requred
+        if primary_action in [2, 7, 8]:
+            return [np.arange(-29,30), np.arange(-29,30), np.arange(10)] #all actions masked
+        if primary_action == 1:
+            top_bound, bottom_bound, left_bound, right_bound = self.get_bounds()
+            if self.selected_element is None:
+                return [np.concatenate([np.arange(-29, top_bound),np.arange(bottom_bound, 30)]), \
+                        np.concatenate([np.arange(-29, left_bound),np.arange(right_bound, 30)]), np.array([self.background_color])]
+            else:
+                core_coord_row, core_coord_col = self.selected_element[0]
+
+                return [np.concatenate([np.arange(-29, top_bound-core_coord_row), np.arange(bottom_bound-core_coord_row, 30)]),
+                        np.concatenate([np.arange(-29, left_bound-core_coord_col), np.arange(right_bound-core_coord_col, 30)]), np.array([self.background_color])]
+        if primary_action in [0, 3, 4]:
+            core_coord_row, core_coord_col = self.selected_element[0]
+            top_bound, bottom_bound, left_bound, right_bound = self.get_bounds()
+            return [
+                np.concatenate([np.arange(-29, top_bound - core_coord_row), np.arange(bottom_bound - core_coord_row, 30)]),
+                np.concatenate([np.arange(-29, left_bound - core_coord_col), np.arange(right_bound - core_coord_col, 30)]),
+                np.arange(0,10)]
+        if primary_action == 5:
+            return [ np.arange(-29, -1), np.arange(-29, -1), np.arange(0,10)]
+        if primary_action == 6:
+            return [np.arange(-29, 1), np.arange(-29, 1), np.arange(0, 10)]
+
 
     def render(self):
         plot_single_image(self.grid, padded=True)
         plot_single_image(self.working_output_grid, padded=True)
 
     def pad_array(self, array):
-        x_pad = self.dimX - array.shape[0]
-        y_pad = self.dimY - array.shape[1]
+        y_pad = self.grid_height - array.shape[0]
+        x_pad = self.grid_width - array.shape[1]
 
         return np.pad(array,
                       ((math.floor(y_pad/2), math.ceil(y_pad/2)), (math.floor(x_pad/2), math.ceil(x_pad/2))),
