@@ -293,7 +293,7 @@ if __name__ == "__main__":
             "gamma": 0.9,
             "num_gpus": 1,
             "num_envs_per_worker": 128,
-            "num_workers": 4,
+            "num_workers": 10,
             "tasks": tasks
         },
     )

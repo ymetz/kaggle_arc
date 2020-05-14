@@ -3,7 +3,9 @@ import numpy as np
 import random
 import math
 from itertools import chain
-from plot_functions import plot_single_image, plot_task
+from kaggle_arc.plot_functions import plot_single_image, plot_task
+
+from copy import deepcopy
 
 action_mapping = {0: "copy", 1: "recolor", 2: "remove", 3: "count", 4: "move", 5: "mirror",
                   6: "resize_output_grid", 7: "none", 8: "done"}
@@ -30,18 +32,18 @@ class ReasoningEnv(gym.Env):
 
         self.background_color = 0
 
+        self.running_reward = 0
+
         self.current_task = None
         self.current_demo_task = None
         self.current_demo_task_index = 0
         self.current_test_task = None
         self.current_test_task_index = 0
-        self.current_episode_steps = 0
 
         self.unique_test_colors = []
         self.current_demo_colormaps, self.current_demo_inv_colormaps = [], []
         self.current_test_colormaps, self.current_test_inv_colormaps = [], []
 
-        self.max_per_demo = 500
         self.done = False
 
         self.observation_space = gym.spaces.Dict({
@@ -74,7 +76,7 @@ class ReasoningEnv(gym.Env):
             self.selection_on_working_grid = True
 
         self.done = False
-        self.current_episode_steps = 0
+        self.running_reward = 0
 
         a1_mask = self.primary_action_mask()
         a2_mask, a3_mask, a4_mask = self.dependant_action_masks()
@@ -170,12 +172,6 @@ class ReasoningEnv(gym.Env):
         if a1_mask[action[0]] == 0 or a2_mask[action[0], action[1]] == 0 \
                 or a3_mask[action[0], action[2]] == 0 or a4_mask[action[0], action[3]] == 0:
             action_name = "none"
-
-        if self.current_episode_steps >= self.max_per_demo:
-            action_name = "none"
-            self.done = True
-            reward = -1.0
-            print("max steps")
 
         # the core coord is a random cell (usually top-left) from the selected element, serves as a local coordiante
         # base (0,0) which offset is added to
@@ -285,16 +281,26 @@ class ReasoningEnv(gym.Env):
         if np.array_equal(self.working_output_grid, self.desired_output_grid):
             print("step solved")
 
-        self.current_episode_steps += 1
-
         if self.done:
             print("env: done")
 
+        self.running_reward += reward
+        score = self.running_reward if self.done else 0
+
         return {"real_obs": tuple([self.grid, self.count_memory]),
                 "action_mask": self.observation_space['action_mask'].sample()}, \
-               reward, \
+               score, \
                self.done, \
                {}
+
+    def set_state(self, state):
+        self.running_reward = state[1]
+        self.env = deepcopy(state[0])
+        obs = np.array(list(self.env.unwrapped.state))
+        return {}
+
+    def get_state(self):
+        return deepcopy(self.env), self.running_reward
 
     def get_next_selected_element(self):
         # plot_single_image(self.grid)
