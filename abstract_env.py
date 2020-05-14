@@ -13,7 +13,7 @@ class ReasoningEnv(gym.Env):
 
     def __init__(self, env_config={}):
         self.grid_height, self.grid_width = 30, 30
-        self.countDim = 10 # number of counts we can save, we expect that 10 are enough for current problems
+        self.countDim = 10  # number of counts we can save, we expect that 10 are enough for current problems
         self.grid = np.zeros(shape=(self.grid_height, self.grid_width), dtype=np.int)
         self.count_memory, self.count_memory_idx = np.zeros(shape=(self.countDim,), dtype=np.int), 0
         self.desired_output_grid = np.zeros(shape=(self.grid_height, self.grid_width), dtype=np.int)
@@ -45,14 +45,15 @@ class ReasoningEnv(gym.Env):
         self.done = False
 
         self.observation_space = gym.spaces.Dict({
-            "real_obs": gym.spaces.Tuple([gym.spaces.Box(0, 10, shape=(self.grid_height, self.grid_width), dtype=np.int),
-                                          gym.spaces.Box(0, 100, shape=(self.countDim,), dtype=np.int)]),
+            "real_obs": gym.spaces.Tuple(
+                [gym.spaces.Box(0, 10, shape=(self.grid_height, self.grid_width), dtype=np.int),
+                 gym.spaces.Box(0, 900, shape=(self.countDim,), dtype=np.int)]),
             "action_mask": gym.spaces.Tuple([gym.spaces.Box(0, 1, shape=(9,), dtype=np.int),
                                              gym.spaces.Box(0, 1, shape=(9, 30), dtype=np.int),
                                              gym.spaces.Box(0, 1, shape=(9, 30), dtype=np.int),
                                              gym.spaces.Box(0, 1, shape=(9, 10), dtype=np.int)])
         })
-        self.action_space = gym.spaces.Tuple([gym.spaces.Discrete(9), gym.spaces.Discrete(31), gym.spaces.Discrete(31),
+        self.action_space = gym.spaces.Tuple([gym.spaces.Discrete(9), gym.spaces.Discrete(30), gym.spaces.Discrete(30),
                                               gym.spaces.Discrete(10)])
 
     def reset(self):
@@ -119,7 +120,7 @@ class ReasoningEnv(gym.Env):
         return len(self.current_task['train']), len(self.current_task['test'])
 
     def set_next_test_task(self):
-        self.current_test_task_index = (self.current_test_task_index+1) % len(self.current_task['test'])
+        self.current_test_task_index = (self.current_test_task_index + 1) % len(self.current_task['test'])
         self.current_test_task = self.current_task['test'][self.current_test_task_index]
 
     def return_grid(self, test_index):
@@ -166,36 +167,37 @@ class ReasoningEnv(gym.Env):
 
         a1_mask = self.primary_action_mask()
         a2_mask, a3_mask, a4_mask = self.dependant_action_masks()
-        if a1_mask[action[1]] == 0 or a2_mask[action[1], action[1]] == 0 \
-                or a3_mask[action[1], action[2]] == 0 or a4_mask[action[1], action[3]] == 0:
+        if a1_mask[action[0]] == 0 or a2_mask[action[0], action[1]] == 0 \
+                or a3_mask[action[0], action[2]] == 0 or a4_mask[action[0], action[3]] == 0:
             action_name = "none"
 
         if self.current_episode_steps >= self.max_per_demo:
+            action_name = "none"
             self.done = True
             reward = -1.0
-
+            print("max steps")
 
         # the core coord is a random cell (usually top-left) from the selected element, serves as a local coordiante
         # base (0,0) which offset is added to
 
-        sec_action_input = action[1] # row coordinate - domain -30,+30
-        third_action_input = action[2] # col coordinate - domain -30,+30
-        fourth_action_input = action[3] # color # domain 0,10
+        sec_action_input = action[1]  # row coordinate - domain -30,+30
+        third_action_input = action[2]  # col coordinate - domain -30,+30
+        fourth_action_input = action[3]  # color # domain 0,10
 
         if action_name == "copy":
             core_coord_row, core_coord_col = self.selected_element[0]
             new_core_coord_row, new_core_coord_col = sec_action_input - core_coord_row, third_action_input - core_coord_col
             top_bound, bottom_bound, left_bound, right_bound = self.get_bounds()
             for coords in self.selected_element:
-                if new_core_coord_row+coords[0] < top_bound or new_core_coord_row+coords[0] >= bottom_bound \
-                        or new_core_coord_col+coords[1] < left_bound or new_core_coord_col+coords[1] >= right_bound:
-                        continue
-                self.working_output_grid[new_core_coord_row+coords[0], new_core_coord_col+coords[1]] = \
+                if new_core_coord_row + coords[0] < top_bound or new_core_coord_row + coords[0] >= bottom_bound \
+                        or new_core_coord_col + coords[1] < left_bound or new_core_coord_col + coords[1] >= right_bound:
+                    continue
+                self.working_output_grid[new_core_coord_row + coords[0], new_core_coord_col + coords[1]] = \
                     self.grid[coords[0], coords[1]]
 
         elif action_name == "recolor":
             # if row,col == 0,0 -> flood fill the selected element, else treat as offset and recolor single element
-            if self.selected_element is not None and (sec_action_input, third_action_input) == (0,0):
+            if self.selected_element is not None and (sec_action_input, third_action_input) == (0, 0):
                 core_coord_row, core_coord_col = self.selected_element[0]
                 new_core_coord_row, new_core_coord_col = sec_action_input - core_coord_row, third_action_input - core_coord_col
                 for coords in self.selected_element:
@@ -214,47 +216,48 @@ class ReasoningEnv(gym.Env):
 
         elif action_name == "move":
             core_coord_row, core_coord_col = self.selected_element[0]
-            element_color = self.working_output_grid[self.selected_element[0][0],self.selected_element[0][1]]
+            element_color = self.working_output_grid[self.selected_element[0][0], self.selected_element[0][1]]
             new_core_coord_row, new_core_coord_col = sec_action_input - core_coord_row, third_action_input - core_coord_col
             top_bound, bottom_bound, left_bound, right_bound = self.get_bounds()
             for coords in self.selected_element:
                 self.working_output_grid[coords[0], coords[1]] = \
                     self.background_color
             for coords in self.selected_element:
-                if new_core_coord_row+coords[0] < top_bound or new_core_coord_row+coords[0] >= bottom_bound \
-                        or new_core_coord_row+coords[1] < left_bound or new_core_coord_row+coords[1] >= right_bound:
-                        continue
-                self.working_output_grid[new_core_coord_row+coords[0], new_core_coord_row+coords[1]] = element_color
+                if new_core_coord_row + coords[0] < top_bound or new_core_coord_row + coords[0] >= bottom_bound \
+                        or new_core_coord_row + coords[1] < left_bound or new_core_coord_row + coords[1] >= right_bound:
+                    continue
+                self.working_output_grid[new_core_coord_row + coords[0], new_core_coord_row + coords[1]] = element_color
 
         elif action_name == "mirror":
-            if (sec_action_input, third_action_input) == (-1,0):
+            if (sec_action_input, third_action_input) == (-1, 0):
                 # mirror up
                 pass
-            elif (sec_action_input, third_action_input) == (1,0):
+            elif (sec_action_input, third_action_input) == (1, 0):
                 # mirror down
                 pass
-            elif (sec_action_input, third_action_input) == (0,-1):
+            elif (sec_action_input, third_action_input) == (0, -1):
                 # mirror left
                 pass
-            elif (sec_action_input, third_action_input) == (0,1):
+            elif (sec_action_input, third_action_input) == (0, 1):
                 # mirror right
                 pass
-            elif (sec_action_input, third_action_input) == (-1,-1):
+            elif (sec_action_input, third_action_input) == (-1, -1):
                 # mirror top-left
                 pass
-            elif (sec_action_input, third_action_input) == (-1,1):
+            elif (sec_action_input, third_action_input) == (-1, 1):
                 # mirror top-right
                 pass
-            elif (sec_action_input, third_action_input) == (1,-1):
+            elif (sec_action_input, third_action_input) == (1, -1):
                 # mirror bottom-left
                 pass
-            elif (sec_action_input, third_action_input) == (1,1):
+            elif (sec_action_input, third_action_input) == (1, 1):
                 # mirror bottom-right
                 pass
 
         elif action_name == "resize_output_grid":
-            self.working_output_grid, self.grid_dims = self.pad_array(np.zeros(shape=(sec_action_input, third_action_input))), \
-                                                      (sec_action_input, third_action_input)
+            self.working_output_grid, self.grid_dims = self.pad_array(
+                np.zeros(shape=(sec_action_input, third_action_input))), \
+                                                       (sec_action_input, third_action_input)
 
         elif action_name == "none":
             pass
@@ -262,8 +265,10 @@ class ReasoningEnv(gym.Env):
         elif action_name == "done":
             if np.array_equal(self.working_output_grid, self.desired_output_grid):
                 reward = 10.0
+                print("succesfull done")
             else:
                 reward = -10.0
+                print("faulty done")
             self.done = True
 
         # we iterate through the elements in our grid (which is part of the input observation for our network)
@@ -282,6 +287,9 @@ class ReasoningEnv(gym.Env):
 
         self.current_episode_steps += 1
 
+        if self.done:
+            print("env: done")
+
         return {"real_obs": tuple([self.grid, self.count_memory]),
                 "action_mask": self.observation_space['action_mask'].sample()}, \
                reward, \
@@ -292,7 +300,7 @@ class ReasoningEnv(gym.Env):
         # plot_single_image(self.grid)
         selected_element, expand_set = [], set()
         non_selected = np.argwhere(self.grid_selection_history == 0)
-        if non_selected.shape[0] == 0: #and self.selection_on_working_grid:
+        if non_selected.shape[0] == 0:  # and self.selection_on_working_grid:
             return None
         selected_element.append(non_selected[0])
         expand_set.add((non_selected[0][0], non_selected[0][1]))
@@ -300,19 +308,21 @@ class ReasoningEnv(gym.Env):
         self.grid[non_selected[0][0], non_selected[0][1]] = self.background_color
         while not not expand_set:
             to_be_expanded = expand_set.pop()
-            for i in [-1,0,1]:
-                for j in [-1,0,1]:
-                    new_coord = (to_be_expanded[0]+i, to_be_expanded[1]+j)
-                    if new_coord[0] < 0 or new_coord[0] >= self.grid_width or new_coord[1] < 0 or new_coord[1] >= self.grid_height:
+            for i in [-1, 0, 1]:
+                for j in [-1, 0, 1]:
+                    new_coord = (to_be_expanded[0] + i, to_be_expanded[1] + j)
+                    if new_coord[0] < 0 or new_coord[0] >= self.grid_width or new_coord[1] < 0 or new_coord[
+                        1] >= self.grid_height:
                         continue
-                    if self.grid_selection_history[new_coord[0]][new_coord[1]] == 0 and self.grid[new_coord[0]][new_coord[1]] == selected_color:
+                    if self.grid_selection_history[new_coord[0]][new_coord[1]] == 0 and self.grid[new_coord[0]][
+                        new_coord[1]] == selected_color:
                         expand_set.add(new_coord)
                         self.grid_selection_history[new_coord[0]][new_coord[1]] = 1
                         selected_element.append(new_coord)
 
         for elem_idx_pair in selected_element:
-            #if not self.selection_on_working_grid:
-                #self.grid[elem_idx_pair[0], elem_idx_pair[1]] = self.background_color # remove elements from working grid
+            # if not self.selection_on_working_grid:
+            # self.grid[elem_idx_pair[0], elem_idx_pair[1]] = self.background_color # remove elements from working grid
             self.grid_selection_history[elem_idx_pair[0], elem_idx_pair[1]] = 1
 
         return selected_element
@@ -327,11 +337,11 @@ class ReasoningEnv(gym.Env):
             resize_action_mask = np.array([0, 1, 0, 0, 0, 0, 0, 0, 1])
 
         if self.selected_element is None:
-            return np.array([0, 1, 0, 0, 0, 0, 0, 0, 1]) # allowed: [1, 8]
+            return np.array([0, 1, 0, 0, 0, 0, 0, 0, 1])  # allowed: [1, 8]
         elif self.selection_on_working_grid:
-            return np.array([1, 1, 1, 1, 1, 1, 0, 1, 1]) + resize_action_mask # allowed: [0, 1, 2, 3, 4, 5, (6), 7, 8]
+            return np.array([1, 1, 1, 1, 1, 0, 0, 1, 1]) + resize_action_mask  # allowed: [0, 1, 2, 3, 4, 5, (6), 7, 8]
         else:
-            return np.array([1, 0, 0, 1, 0, 0, 0, 1, 1])  + resize_action_mask # allowed: [0, 3, 6, 7, 8]
+            return np.array([1, 0, 0, 1, 0, 0, 0, 1, 1]) + resize_action_mask  # allowed: [0, 3, 6, 7, 8]
 
     def dependant_action_masks(self):
         a2_mask, a3_mask, a4_mask = np.zeros(shape=(9, 30)), np.zeros(shape=(9, 30)), np.zeros(shape=(9, 10)),
@@ -341,17 +351,16 @@ class ReasoningEnv(gym.Env):
             np.put(a2_mask[primary_action, :], np.arange(top_bound, bottom_bound), 1)
             np.put(a3_mask[primary_action, :], np.arange(left_bound, right_bound), 1)
             np.put(a4_mask[primary_action, :], [self.background_color], 1)
-        # primary action == 5
+            # primary action == 5
             np.put(a2_mask[5, :], np.arange(top_bound, bottom_bound), 1)
             np.put(a3_mask[5, :], np.arange(left_bound, right_bound), 1)
             np.put(a4_mask[5, :], [self.background_color], 1)
-        # primary_action == 6:
+            # primary_action == 6:
             a2_mask[primary_action, :]
             a2_mask[6, :] = np.ones(shape=(30,))
             a3_mask[6, :] = np.ones(shape=(30,))
             a4_mask[6, :] = np.ones(shape=(10,))
         return a2_mask, a3_mask, a4_mask
-
 
     def render(self):
         plot_single_image(self.grid, padded=True)
@@ -362,7 +371,7 @@ class ReasoningEnv(gym.Env):
         x_pad = self.grid_width - array.shape[1]
 
         return np.pad(array,
-                      ((math.floor(y_pad/2), math.ceil(y_pad/2)), (math.floor(x_pad/2), math.ceil(x_pad/2))),
+                      ((math.floor(y_pad / 2), math.ceil(y_pad / 2)), (math.floor(x_pad / 2), math.ceil(x_pad / 2))),
                       constant_values=10)
 
     def squash_colors(self, arrays, single_input=False, test_unique_colors=None):
@@ -382,7 +391,7 @@ class ReasoningEnv(gym.Env):
             colormap[color] = color_index
             inverse_colormap[color_index] = color
             color_index += 1
-        for u_color in unique_out_colors: # identify function for colors unique to output
+        for u_color in unique_out_colors:  # identify function for colors unique to output
             colormap[u_color] = u_color
             inverse_colormap[u_color] = u_color
 
@@ -395,5 +404,3 @@ class ReasoningEnv(gym.Env):
             return map_func(arrays[0]), map_func(arrays[1]), colormap, inverse_colormap, unique_out_colors
         else:
             return map_func(arrays[0]), colormap, inverse_colormap
-
-

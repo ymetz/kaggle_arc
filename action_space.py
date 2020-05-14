@@ -32,7 +32,7 @@ class ReasoningAutoregressiveOutput(ActionDistribution):
 
     @staticmethod
     def required_model_output_shape(self, model_config):
-        return 40  # controls model output feature vector size
+        return 20  # controls model output feature vector size
 
     def deterministic_sample(self):
         # first, sample a1
@@ -81,8 +81,8 @@ class ReasoningAutoregressiveOutput(ActionDistribution):
         a3_vec = tf.expand_dims(tf.cast(a3, tf.float32), 1)
         a1_logits, a2_logits, a3_logits, a4_logits = self.model.action_model([self.inputs, a1_vec, a2_vec, a3_vec])
         return (
-            Categorical(a1_logits).logp(a1) + Categorical(a2_logits).logp(a2) + Categorical(a3_logits).logp(a3)
-            + Categorical(a4_logits).logp(a4)
+                Categorical(a1_logits).logp(a1) + Categorical(a2_logits).logp(a2) + Categorical(a3_logits).logp(a3)
+                + Categorical(a4_logits).logp(a4)
         )
 
     def sampled_action_logp(self):
@@ -112,17 +112,18 @@ class ReasoningAutoregressiveOutput(ActionDistribution):
 
     def _a1_distribution(self):
         BATCH = tf.shape(self.inputs)[0]
-        a1_logits, _, _, _ = self.model.action_model([self.inputs, tf.zeros((BATCH, 1)), tf.zeros((BATCH, 1)), tf.zeros((BATCH, 1))])
-        # a1_logits = a1_logits + self.model.a1_mask
+        a1_logits, _, _, _ = self.model.action_model(
+            [self.inputs, tf.zeros((BATCH, 1)), tf.zeros((BATCH, 1)), tf.zeros((BATCH, 1))])
+        a1_logits = a1_logits * self.model.a1_mask
         a1_dist = Categorical(a1_logits)
         return a1_dist
 
     def _a2_distribution(self, a1):
         BATCH = tf.shape(self.inputs)[0]
         a1_vec = tf.expand_dims(tf.cast(a1, tf.float32), 1)
-        a1_logits, a2_logits, _, _ = self.model.action_model([self.inputs, a1_vec, tf.zeros((BATCH, 1)), tf.zeros((BATCH, 1))])
-        max_a1_action = tf.math.argmax(a1_logits, axis=1)
-        # a2_logits = a2_logits + self.model.a2_mask[max_a1_action]
+        _, a2_logits, _, _ = self.model.action_model(
+            [self.inputs, a1_vec, tf.zeros((BATCH, 1)), tf.zeros((BATCH, 1))])
+        # a2_logits = a2_logits + self.model.a2_mask[tf.keras.backend.eval(a1)[0]]
         a2_dist = Categorical(a2_logits)
         return a2_dist
 
@@ -155,15 +156,15 @@ class AutoregressiveActionsModel(TFModelV2):
 
         # Inputs
         obs_input = tf.keras.layers.Input(shape=true_obs_shape, name="obs_input")
-        a1_input = tf.keras.layers.Input(shape=(1, ), name="a1_input")
-        a2_input = tf.keras.layers.Input(shape=(1, ), name="a2_input")
+        a1_input = tf.keras.layers.Input(shape=(1,), name="a1_input")
+        a2_input = tf.keras.layers.Input(shape=(1,), name="a2_input")
         a3_input = tf.keras.layers.Input(shape=(1,), name="a3_input")
-        ctx_input = tf.keras.layers.Input(shape=(num_outputs, ), name="ctx_input")
+        ctx_input = tf.keras.layers.Input(shape=(num_outputs,), name="ctx_input")
 
-        # self.a1_mask = tf.keras.Input(shape=(8,), name="a1_mask")
-        # self.a2_mask = tf.keras.Input(shape=(8, 30,), name="a2_mask")
-        # self.a3_mask = tf.keras.Input(shape=(8, 30,), name="a3_mask")
-        # self.a4_mask = tf.keras.Input(shape=(8, 9,), name="a4_mask")
+        self.a1_mask = None
+        self.a2_mask = None
+        self.a3_mask = None
+        self.a4_mask = None
         # self.register_variables([self.a1_mask, self.a2_mask, self.a3_mask, self.a4_mask])
 
         # Output of the model (normally 'logits' but for an autoregressive dist this is more like a context/feature
@@ -240,11 +241,10 @@ class AutoregressiveActionsModel(TFModelV2):
 
     def forward(self, input_dict, state, seq_lens):
         context, self._value_out = self.base_model(input_dict["obs_flat"][:, :910])
-        # self.a1_mask, self.a2_mask, self.a3_mask, self.a4_mask = tf.maximum(tf.log(input_dict["obs"]["action_mask"][0]), tf.float32.min), \
-        #                                                          tf.maximum(tf.log(input_dict["obs"]["action_mask"][1]), tf.float32.min), \
-        #                                                          tf.maximum(tf.log(input_dict["obs"]["action_mask"][2]), tf.float32.min), \
-        #                                                          tf.maximum(tf.log(input_dict["obs"]["action_mask"][3]), tf.float32.min),
-
+        self.a1_mask, self.a2_mask, self.a3_mask, self.a4_mask = input_dict["obs"]["action_mask"][0], \
+                                                                 input_dict["obs"]["action_mask"][1], \
+                                                                 input_dict["obs"]["action_mask"][2], \
+                                                                 input_dict["obs"]["action_mask"][3],
         return context, state
 
     def value_function(self):
@@ -268,11 +268,16 @@ if __name__ == "__main__":
         in_tasks = config.pop("tasks")
         trainer = PPOTrainer(config=config, env=ReasoningEnv)
         while True:
+            distributed_task = random.choice(in_tasks)
             trainer.workers.foreach_worker(
                 lambda ev: ev.foreach_env(
-                    lambda env: env.set_current_task(random.choice(in_tasks))))
+                    lambda env: env.set_current_task(distributed_task)
+                )
+            )
             result = trainer.train()
+            print(result)
             reporter(**result)
+
 
     tasks = []
     for file in os.listdir(training_path):
@@ -281,17 +286,14 @@ if __name__ == "__main__":
 
     tune.run(
         train,
+        resources_per_trial={'gpu': 1},
         config={
             "env": ReasoningEnv,
             "env_config": {"tasks": tasks},
-            "gamma": 0.5,
-            "num_gpus": 0,
-            "model": {
-                "custom_model": "autoregressive_model",
-                "custom_action_dist": "reasoning_autoreg_output"
-            },
+            "gamma": 0.9,
+            "num_gpus": 1,
+            "num_envs_per_worker": 128,
+            "num_workers": 4,
             "tasks": tasks
         },
     )
-
-

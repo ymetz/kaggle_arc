@@ -74,8 +74,6 @@ for iteration in range(training_iterations):
         print(i)
     break
 
-    print("====> FINISHED TRAINING ITERATION ", iteration)
-
 print("FINISHED in {}s".format(time.time()-start_time))
 
 
