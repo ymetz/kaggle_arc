@@ -3,7 +3,7 @@ import numpy as np
 import random
 import math
 from itertools import chain
-from kaggle_arc.plot_functions import plot_single_image, plot_task
+from plot_functions import plot_single_image, plot_task
 
 from copy import deepcopy
 
@@ -17,6 +17,7 @@ class ReasoningEnv(gym.Env):
         self.grid_height, self.grid_width = 30, 30
         self.countDim = 10  # number of counts we can save, we expect that 10 are enough for current problems
         self.grid = np.zeros(shape=(self.grid_height, self.grid_width), dtype=np.int)
+        self.selection_mask = np.zeros(shape=(self.grid_height, self.grid_width), dtype=np.int)
         self.count_memory, self.count_memory_idx = np.zeros(shape=(self.countDim,), dtype=np.int), 0
         self.desired_output_grid = np.zeros(shape=(self.grid_height, self.grid_width), dtype=np.int)
         self.working_output_grid, self.grid_dims = np.zeros(shape=(self.grid_height, self.grid_width), dtype=np.int), \
@@ -40,23 +41,45 @@ class ReasoningEnv(gym.Env):
         self.current_test_task = None
         self.current_test_task_index = 0
 
-        self.unique_test_colors = []
         self.current_demo_colormaps, self.current_demo_inv_colormaps = [], []
         self.current_test_colormaps, self.current_test_inv_colormaps = [], []
 
         self.done = False
 
         self.observation_space = gym.spaces.Dict({
+            # Observation has
+            # - 3 channels for working grid, selection mask and output image
+            # - 10 channels for the colors, 1 for background and one for the selection mask
             "real_obs": gym.spaces.Tuple(
-                [gym.spaces.Box(0, 10, shape=(self.grid_height, self.grid_width), dtype=np.int),
+                [gym.spaces.Box(0, 10, shape=(self.grid_height, self.grid_width, 3), dtype=np.int),
                  gym.spaces.Box(0, 900, shape=(self.countDim,), dtype=np.int)]),
-            "action_mask": gym.spaces.Tuple([gym.spaces.Box(0, 1, shape=(9,), dtype=np.int),
+            "action_mask": gym.spaces.Tuple([gym.spaces.Box(0, 1, shape=(19,), dtype=np.int),
                                              gym.spaces.Box(0, 1, shape=(9, 30), dtype=np.int),
-                                             gym.spaces.Box(0, 1, shape=(9, 30), dtype=np.int),
-                                             gym.spaces.Box(0, 1, shape=(9, 10), dtype=np.int)])
+                                             gym.spaces.Box(0, 1, shape=(9, 30), dtype=np.int)])
         })
-        self.action_space = gym.spaces.Tuple([gym.spaces.Discrete(9), gym.spaces.Discrete(30), gym.spaces.Discrete(30),
-                                              gym.spaces.Discrete(10)])
+        # Action Space
+        #   0 - copy: (30x, 30y) - 0 means current object, else bounding box
+        #   1 - recolor_0: recolor selected element with color 0
+        #   2 - recolor_1: recolor selected element with color 1
+        #   3 - recolor_2: recolor ...
+        #   4 - recolor_3: recolor ...
+        #   5 - recolor_4: recolor ...
+        #   6 - recolor_5: recolor ...
+        #   7 - recolor_6: recolor ...
+        #   8 - recolor_7: recolor ...
+        #   9 - recolor_8: recolor ...
+        #   10 - recolor_9: recolor ...
+        #   11 - draw: (30x, 30y) - draw at specified coordinate with "special color", if not recolored defaults
+        #   to first color
+        #   12 - remove: - means removing the highlighted element equiv. to setting to background color
+        #   13 - count: counting the tiles in the currently selected element
+        #   14 - move: (30x, 30y) - move to x/y coordinate
+        #   15 - mirror: (top, right, bottom, left) - axis, mirrors in place (in bounding box)
+        #   16 - resize_output_grid: (30x, 30y) - hard coded for most examples
+        #   17 - none: do nothing / skip highlighted element
+        #   18 - done: - action to be submitted when done
+        self.action_space = gym.spaces.Tuple(
+            [gym.spaces.Discrete(19), gym.spaces.Discrete(30), gym.spaces.Discrete(30), ])
 
     def reset(self):
         self.current_demo_task_index = (self.current_demo_task_index + 1) % len(self.current_task['train'])
@@ -79,10 +102,11 @@ class ReasoningEnv(gym.Env):
         self.running_reward = 0
 
         a1_mask = self.primary_action_mask()
-        a2_mask, a3_mask, a4_mask = self.dependant_action_masks()
+        a2_mask, a3_mask = self.dependant_action_masks()
 
-        return {"real_obs": tuple([self.grid, self.count_memory]),
-                "action_mask": self.observation_space['action_mask'].sample()}
+        return {"real_obs": tuple([np.dstack([self.grid, self.selection_mask, self.working_output_grid]),
+                                   self.count_memory]),
+                "action_mask": tuple([a1_mask, a2_mask, a3_mask])}
 
     def set_current_task(self, task):
         self.current_task = task
@@ -97,8 +121,8 @@ class ReasoningEnv(gym.Env):
             self.current_demo_inv_colormaps.append(inv_colmap)
             unique_test_colors.append(demo_utc)
             if task['input'].shape == task['output'].shape:
-                # if more than 50% of the input and output grid are equal, and the shapes match, copy the input grid to the
-                # working output grid
+                # if more than 50% of the input and output grid are equal, and the shapes match,
+                # copy the input grid to the working output grid
                 in_out_similarities.append(np.count_nonzero(np.equal(task['input'], task['output']) == True))
             else:
                 in_out_similarities.append(0)
@@ -120,6 +144,16 @@ class ReasoningEnv(gym.Env):
 
     def get_number_of_demo_test_in_taks(self):
         return len(self.current_task['train']), len(self.current_task['test'])
+
+    @staticmethod
+    def grid_to_one_hot_channel_output(grid: np.array, nr_of_values):
+        return_array = np.zeros(shape=grid.shape + (nr_of_values,))
+
+        for channel in range(nr_of_values):
+            # only set the specific
+            return_array[:, :, channel] = np.where(grid == channel, grid, 0)
+
+        return return_array
 
     def set_next_test_task(self):
         self.current_test_task_index = (self.current_test_task_index + 1) % len(self.current_task['test'])
@@ -161,28 +195,24 @@ class ReasoningEnv(gym.Env):
             action[0]: which basic action to choose
             action[1]: x coordinate if applicable
             action[2]: y coordinate if applicable
-            action[3]: color for recolor
         """
-        action_name = action_mapping[action[0]]
 
         reward = 0.0
 
         a1_mask = self.primary_action_mask()
-        a2_mask, a3_mask, a4_mask = self.dependant_action_masks()
-        if a1_mask[action[0]] == 0 or a2_mask[action[0], action[1]] == 0 \
-                or a3_mask[action[0], action[2]] == 0 or a4_mask[action[0], action[3]] == 0:
-            action_name = "none"
+        a2_mask, a3_mask = self.dependant_action_masks()
 
         # the core coord is a random cell (usually top-left) from the selected element, serves as a local coordiante
         # base (0,0) which offset is added to
 
         sec_action_input = action[1]  # row coordinate - domain -30,+30
         third_action_input = action[2]  # col coordinate - domain -30,+30
-        fourth_action_input = action[3]  # color # domain 0,10
 
-        if action_name == "copy":
+        # copy
+        if action[0] == 0:
             core_coord_row, core_coord_col = self.selected_element[0]
-            new_core_coord_row, new_core_coord_col = sec_action_input - core_coord_row, third_action_input - core_coord_col
+            new_core_coord_row, new_core_coord_col = sec_action_input - core_coord_row, \
+                                                     third_action_input - core_coord_col
             top_bound, bottom_bound, left_bound, right_bound = self.get_bounds()
             for coords in self.selected_element:
                 if new_core_coord_row + coords[0] < top_bound or new_core_coord_row + coords[0] >= bottom_bound \
@@ -191,26 +221,26 @@ class ReasoningEnv(gym.Env):
                 self.working_output_grid[new_core_coord_row + coords[0], new_core_coord_col + coords[1]] = \
                     self.grid[coords[0], coords[1]]
 
-        elif action_name == "recolor":
-            # if row,col == 0,0 -> flood fill the selected element, else treat as offset and recolor single element
-            if self.selected_element is not None and (sec_action_input, third_action_input) == (0, 0):
-                core_coord_row, core_coord_col = self.selected_element[0]
-                new_core_coord_row, new_core_coord_col = sec_action_input - core_coord_row, third_action_input - core_coord_col
+        elif 10 >= action[0] >= 1:  # recolor
+            # fill the selected element
+            color = action[0] - 1
+            if self.selected_element is not None:
                 for coords in self.selected_element:
-                    self.working_output_grid[new_core_coord_row + coords[0], new_core_coord_col + coords[1]] = \
-                        fourth_action_input
-            else:
-                self.working_output_grid[sec_action_input, third_action_input] = fourth_action_input
+                    self.working_output_grid[coords[0], coords[1]] = color
 
-        elif action_name == "remove":
+        elif action[0] == 11:  # draw at specified position with special color (10)
+            # 10 is the special color reserved for drawing
+            self.working_output_grid[sec_action_input, third_action_input] = 10
+
+        elif action[0] == 12:  # remove
             for coords in self.selected_element:
                 self.working_output_grid[coords[0], coords[1]] = self.background_color
 
-        elif action_name == "count":
+        elif action[0] == 13:  # count
             self.count_memory[self.count_memory_idx] = len(self.selected_element)
             self.count_memory_idx = (self.count_memory_idx + 1) % self.countDim
 
-        elif action_name == "move":
+        elif action[0] == 14:  # move
             core_coord_row, core_coord_col = self.selected_element[0]
             element_color = self.working_output_grid[self.selected_element[0][0], self.selected_element[0][1]]
             new_core_coord_row, new_core_coord_col = sec_action_input - core_coord_row, third_action_input - core_coord_col
@@ -224,7 +254,7 @@ class ReasoningEnv(gym.Env):
                     continue
                 self.working_output_grid[new_core_coord_row + coords[0], new_core_coord_row + coords[1]] = element_color
 
-        elif action_name == "mirror":
+        elif action[0] == 15:
             if (sec_action_input, third_action_input) == (-1, 0):
                 # mirror up
                 pass
@@ -250,21 +280,20 @@ class ReasoningEnv(gym.Env):
                 # mirror bottom-right
                 pass
 
-        elif action_name == "resize_output_grid":
+        elif action[0] == 16:  # resize output working grid
             self.working_output_grid, self.grid_dims = self.pad_array(
                 np.zeros(shape=(sec_action_input, third_action_input))), \
                                                        (sec_action_input, third_action_input)
 
-        elif action_name == "none":
+        elif action[0] == 17:  # none
             pass
 
-        elif action_name == "done":
+        elif action[0] == 18:  # done
             if np.array_equal(self.working_output_grid, self.desired_output_grid):
                 reward = 10.0
                 print("succesfull done")
             else:
                 reward = -10.0
-                print("faulty done")
             self.done = True
 
         # we iterate through the elements in our grid (which is part of the input observation for our network)
@@ -276,31 +305,21 @@ class ReasoningEnv(gym.Env):
             self.selection_on_working_grid = True
 
         a1_mask = self.primary_action_mask()
-        a2_mask, a3_mask, a4_mask = self.dependant_action_masks()
-
-        if np.array_equal(self.working_output_grid, self.desired_output_grid):
-            print("step solved")
-
-        if self.done:
-            print("env: done")
+        a2_mask, a3_mask = self.dependant_action_masks()
 
         self.running_reward += reward
         score = self.running_reward if self.done else 0
 
-        return {"real_obs": tuple([self.grid, self.count_memory]),
-                "action_mask": self.observation_space['action_mask'].sample()}, \
-               score, \
-               self.done, \
-               {}
+        return {"real_obs": tuple([np.dstack([self.grid, self.selection_mask, self.working_output_grid]),
+                                   self.count_memory]), "action_mask": tuple([a1_mask, a2_mask, a3_mask])}, \
+               score, self.done, {}
 
-    def set_state(self, state):
-        self.running_reward = state[1]
-        self.env = deepcopy(state[0])
-        obs = np.array(list(self.env.unwrapped.state))
-        return {}
-
-    def get_state(self):
-        return deepcopy(self.env), self.running_reward
+    # def set_state(self, state):
+    #     self.running_reward = state[1]
+    #     self.env = deepcopy(state[0])
+    #
+    # def get_state(self):
+    #     return deepcopy(self.env), self.running_reward
 
     def get_next_selected_element(self):
         # plot_single_image(self.grid)
@@ -317,11 +336,11 @@ class ReasoningEnv(gym.Env):
             for i in [-1, 0, 1]:
                 for j in [-1, 0, 1]:
                     new_coord = (to_be_expanded[0] + i, to_be_expanded[1] + j)
-                    if new_coord[0] < 0 or new_coord[0] >= self.grid_width or new_coord[1] < 0 or new_coord[
-                        1] >= self.grid_height:
+                    if new_coord[0] < 0 or new_coord[0] >= self.grid_width or new_coord[1] < 0 \
+                            or new_coord[1] >= self.grid_height:
                         continue
-                    if self.grid_selection_history[new_coord[0]][new_coord[1]] == 0 and self.grid[new_coord[0]][
-                        new_coord[1]] == selected_color:
+                    if self.grid_selection_history[new_coord[0]][new_coord[1]] == 0 \
+                            and self.grid[new_coord[0]][new_coord[1]] == selected_color:
                         expand_set.add(new_coord)
                         self.grid_selection_history[new_coord[0]][new_coord[1]] = 1
                         selected_element.append(new_coord)
@@ -331,42 +350,43 @@ class ReasoningEnv(gym.Env):
             # self.grid[elem_idx_pair[0], elem_idx_pair[1]] = self.background_color # remove elements from working grid
             self.grid_selection_history[elem_idx_pair[0], elem_idx_pair[1]] = 1
 
+        self.selection_mask = np.zeros(shape=(self.grid_height, self.grid_width), dtype=np.int)
+        np.put(self.selection_mask, selected_element, 1)
+
+
         return selected_element
 
     def primary_action_mask(self):
+        return_action_mask = np.zeros(shape=(19,))
         if np.array_equal(self.working_output_grid, self.desired_output_grid):
             print("solved")
-            return np.array([0, 0, 0, 0, 0, 0, 0, 0, 1])  # allowed: [8]
+            np.put(return_action_mask, 18, 1)  # allowed: done
+            return return_action_mask
         if not self.output_size_fixed:
-            resize_action_mask = np.array([0, 0, 0, 0, 0, 0, 1, 0, 0])
-        else:
-            resize_action_mask = np.array([0, 1, 0, 0, 0, 0, 0, 0, 1])
+            np.put(return_action_mask, 16, 1)  # allowed: resize_grid
 
         if self.selected_element is None:
-            return np.array([0, 1, 0, 0, 0, 0, 0, 0, 1])  # allowed: [1, 8]
+            np.put(return_action_mask, [11, 18], 1)  # allowed: draw, done
         elif self.selection_on_working_grid:
-            return np.array([1, 1, 1, 1, 1, 0, 0, 1, 1]) + resize_action_mask  # allowed: [0, 1, 2, 3, 4, 5, (6), 7, 8]
+            # only allow recoloring to
+            allowed_colors = list(self.current_demo_inv_colormaps[self.current_demo_task_index].keys())
+            np.put(return_action_mask, [0, 1, 11, 12, 13, 14, 17, 18] + allowed_colors, 1)
         else:
-            return np.array([1, 0, 0, 1, 0, 0, 0, 1, 1]) + resize_action_mask  # allowed: [0, 3, 6, 7, 8]
+            np.put(return_action_mask, [0, 17, 18], 1)  # allowed: [0, 3, 6, 7, 8]
+
+        return return_action_mask
 
     def dependant_action_masks(self):
-        a2_mask, a3_mask, a4_mask = np.zeros(shape=(9, 30)), np.zeros(shape=(9, 30)), np.zeros(shape=(9, 10)),
-        # if 2:remove, 7:none, 8:done, no followup action requred
+        a2_mask, a3_mask = np.zeros(shape=(19, 30)), np.zeros(shape=(19, 30))
+        # if 1-10, 12:remove, 17:none, 18:done, no followup action allowe
         top_bound, bottom_bound, left_bound, right_bound = self.get_bounds()
-        for primary_action in [0, 1, 3, 4]:
+        for primary_action in [0, 11, 13, 14]:
             np.put(a2_mask[primary_action, :], np.arange(top_bound, bottom_bound), 1)
             np.put(a3_mask[primary_action, :], np.arange(left_bound, right_bound), 1)
-            np.put(a4_mask[primary_action, :], [self.background_color], 1)
-            # primary action == 5
-            np.put(a2_mask[5, :], np.arange(top_bound, bottom_bound), 1)
-            np.put(a3_mask[5, :], np.arange(left_bound, right_bound), 1)
-            np.put(a4_mask[5, :], [self.background_color], 1)
-            # primary_action == 6:
-            a2_mask[primary_action, :]
-            a2_mask[6, :] = np.ones(shape=(30,))
-            a3_mask[6, :] = np.ones(shape=(30,))
-            a4_mask[6, :] = np.ones(shape=(10,))
-        return a2_mask, a3_mask, a4_mask
+        # primary_action == 16
+        a2_mask[6, :] = np.ones(shape=(30,))
+        a3_mask[6, :] = np.ones(shape=(30,))
+        return a2_mask, a3_mask
 
     def render(self):
         plot_single_image(self.grid, padded=True)
@@ -376,9 +396,10 @@ class ReasoningEnv(gym.Env):
         y_pad = self.grid_height - array.shape[0]
         x_pad = self.grid_width - array.shape[1]
 
+        # 10 is the special color for drawing, 11 the padding background color
         return np.pad(array,
                       ((math.floor(y_pad / 2), math.ceil(y_pad / 2)), (math.floor(x_pad / 2), math.ceil(x_pad / 2))),
-                      constant_values=10)
+                      constant_values=11)
 
     def squash_colors(self, arrays, single_input=False, test_unique_colors=None):
         if not single_input:
@@ -390,7 +411,7 @@ class ReasoningEnv(gym.Env):
 
         colormap = {}
         inverse_colormap = {}
-        color_index = 0
+        color_index = 1
         for color in colors_in_example:
             if color in unique_out_colors:
                 continue

@@ -24,14 +24,24 @@ test_path = data_path / 'test'
 
 # Action Space
 #   0 - copy: (30x, 30y) - 0 means current object, else bounding box
-#   1 - recolor: (30x, 30y, 10color) - means coordiante & color
-#   2 - remove: - means removing the highlighted element equiv. to setting to background color
-#   3 - count: (30x, 30y) - 0 means counting the current element
-#   4 - move: (30x, 30y) - move to x/y coordinate
-#   5 - mirror: (top, right, bottom, left) - axis, mirrors in place (in bounding box)
-#   6 - resize_output_grid: (30x, 30y) - hard coded for most examples
-#   7 - none: do nothing / skip highlighted element
-#   8 - done: - action to be submitted when done
+#   1 - recolor_0: recolor selected element with color 0
+#   2 - recolor_1: recolor selected element with color 1
+#   3 - recolor_2: recolor ...
+#   4 - recolor_3: recolor ...
+#   5 - recolor_4: recolor ...
+#   6 - recolor_5: recolor ...
+#   7 - recolor_6: recolor ...
+#   8 - recolor_7: recolor ...
+#   9 - recolor_8: recolor ...
+#   10 - recolor_9: recolor ...
+#   11 - draw: (30x, 30y) - draw at specified coordiante with "special color", if not recolored defaults to first color
+#   12 - remove: - means removing the highlighted element equiv. to setting to background color
+#   13 - count: (30x, 30y) - 0 means counting the current element
+#   14 - move: (30x, 30y) - move to x/y coordinate
+#   15 - mirror: (top, right, bottom, left) - axis, mirrors in place (in bounding box)
+#   16 - resize_output_grid: (30x, 30y) - hard coded for most examples
+#   17 - none: do nothing / skip highlighted element
+#   18 - done: - action to be submitted when done
 
 tasks = []
 for file in os.listdir(training_path):
@@ -42,36 +52,27 @@ training_iterations = 50
 env = ReasoningEnv()
 env.set_current_task(tasks[0])
 env.reset()
-env.step([1,2,3,4])
 
-exit()
-
-available_primary_actions = [0,1,2,3,4,5,6,7,8]
-available_secondary_actions = np.arange(-29, 30,)
-available_third_actions = np.arange(-29, 30)
-available_fourth_actions = np.arange(0,)
-
-start_time = time.time()
 for iteration in range(training_iterations):
     iter_task_list = tasks
     random.shuffle(iter_task_list)
 
     for i, task in enumerate(iter_task_list):
+        start_time = time.time()
         env.set_current_task(task)
         for _ in range(5):
             obs = env.reset()
             for _ in range(500):
-                primary_action_mask = env.primary_action_mask()
-                random_action = random.choice(list(set(available_primary_actions)-set(primary_action_mask)))
-                sec_th_fth_masks = env.dependant_action_masks()
-                scd_act = random.choice(list(set()-set(sec_th_fth_masks[0]))) if len(sec_th_fth_masks[0][random_action]) < len(available_secondary_actions) else None
-                thi_act = random.choice(list(set(available_third_actions)-set(sec_th_fth_masks[1]))) if len(sec_th_fth_masks[1][random_action]) < len(available_third_actions) else Noneavailable_secondary_actions
-                fth_act = random.choice(list(set(available_fourth_actions)-set(sec_th_fth_masks[2]))) if len(sec_th_fth_masks[2][random_action]) < len(available_fourth_actions) else None
-                # print("actions", random_action, scd_act, thi_act, fth_act)
-                obs, rew, done, _ = env.step([random_action, scd_act, thi_act, fth_act])
+                primary_action_mask = obs["action_mask"][0]
+                primary_action = np.random.choice(np.argwhere(primary_action_mask == 1).flatten())
+                secondary_action_mask, third_action_mask = obs["action_mask"][1], obs["action_mask"][1]
+                if np.count_nonzero(secondary_action_mask) > 0 and np.count_nonzero(third_action_mask) > 0:
+                    secondary_action = np.random.choice(np.argwhere(secondary_action_mask == 1).flatten())
+                    third_action = np.random.choice(np.argwhere(third_action_mask == 1).flatten())
+                obs, rew, done, _ = env.step([primary_action, secondary_action, third_action])
                 if env.done:
                     obs = env.reset()
-        print(i)
+        print(i, " time for task:", time.time()-start_time, "s")
     break
 
 print("FINISHED in {}s".format(time.time()-start_time))

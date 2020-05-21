@@ -5,7 +5,7 @@ import numpy as np
 
 class Node:
 
-    def __init__(self, action, obs, done, reward, state, mcts, parent=None):
+    def __init__(self, action, obs, done, reward, state, parent=None):
         self.env = parent.env
         self.action = action
 
@@ -17,20 +17,14 @@ class Node:
         self.child_total_value = np.zeros(
             [self.action_space_size], dtype=np.float32 # Q
         )
-        self.child_priors = np.zeros(
+        self.policy_values = np.zeros(
             [self.action_space_size], dtype=np.float32 # P
-        )
-        self.child_number_visits = np.zeros(
-            [self.action_space_size], dtype=np.float32 # N
         )
         self.valid_actions = obs["action_mask"].astype(np.bool)
 
         self.reward = reward
         self.done = done
         self.state = state
-        self.obs = obs
-
-        self.mcts = mcts
 
     @property
     def number_visits(self):
@@ -48,14 +42,8 @@ class Node:
     def total_value(self, value):
         self.parent.child_total_visits[self.action]
 
-    def child_Q(self):
-        return self.child_total_value / (1 + self.child_number_visits)
-
-    def child_U(self):
-        return math.sqrt(self.number_visits) * self.child_priors / (1 + self.child_number_visits)
-
     def best_action(self):
-        child_score = self.child_Q() + self.mcts.c_puct * self.child_U()
+        child_score =
         masked_child_score = child_score
         masked_child_score[~self.valid_actions] = -np.inf
         return np.argmax(masked_child_score)
@@ -96,8 +84,8 @@ class Node:
 class RootParentNode:
     def _init_(self, env):
         self.parent = None
-        self.child_total_value = collections.defaultdict(float)
-        self.child_number_visits = collections.defaultdict(float)
+        self.children = {}
+        self.p_children = None
         self.env = env
 
 class TreeSearch:
