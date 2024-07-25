@@ -1,39 +1,52 @@
-import gym
+import gymnasium as gym
 import numpy as np
-import random
+import tkinter as tk
 import math
 from itertools import chain
-from plot_functions import plot_single_image, plot_task
+from matplotlib import colors
 
 from copy import deepcopy
 
 action_mapping = {0: "copy", 1: "recolor", 2: "remove", 3: "count", 4: "move", 5: "mirror",
                   6: "resize_output_grid", 7: "none", 8: "done"}
 
+original_cmap = colors.ListedColormap(
+    ['#000000', '#0074D9', '#FF4136', '#2ECC40', '#FFDC00',
+     '#AAAAAA', '#F012BE', '#FF851B', '#7FDBFF', '#870C25'])
+
+padded_cmap= colors.ListedColormap(
+    ['#000000', '#0074D9', '#FF4136', '#2ECC40', '#FFDC00',
+     '#AAAAAA', '#F012BE', '#FF851B', '#7FDBFF', '#870C25', '#F5F5F5', '#FFD700'])
 
 class ReasoningEnv(gym.Env):
 
-    def __init__(self, env_config={}):
+    metadata = {'render.modes': ['human', 'rgb_array']}
+
+    def __init__(self, render_mode: str|None = None):
+
+        
         self.grid_height, self.grid_width = 30, 30
         self.countDim = 10  # number of counts we can save, we expect that 10 are enough for current problems
-        self.grid = np.zeros(shape=(self.grid_height, self.grid_width), dtype=np.int)
-        self.selection_mask = np.zeros(shape=(self.grid_height, self.grid_width), dtype=np.int)
-        self.count_memory, self.count_memory_idx = np.zeros(shape=(self.countDim,), dtype=np.int), 0
-        self.desired_output_grid = np.zeros(shape=(self.grid_height, self.grid_width), dtype=np.int)
-        self.working_output_grid, self.grid_dims = np.zeros(shape=(self.grid_height, self.grid_width), dtype=np.int), \
+        self.grid = np.zeros(shape=(self.grid_height, self.grid_width), dtype=np.int32)
+        self.selection_mask = np.zeros(shape=(self.grid_height, self.grid_width), dtype=np.int32)
+        self.count_memory, self.count_memory_idx = np.zeros(shape=(self.countDim,), dtype=np.int32), 0
+        self.desired_output_grid = np.zeros(shape=(self.grid_height, self.grid_width), dtype=np.int32)
+        self.working_output_grid, self.grid_dims = np.zeros(shape=(self.grid_height, self.grid_width), dtype=np.int32), \
                                                    (self.grid_height, self.grid_width)
         # selected elements is a list of grid indices belonging to the selected element, first element as core coord. +
         # following coordinates relative to core coord.
         self.selected_element = [(0, 0)]
         # if we iterated all elements of the input grid, continue iteration on working grid
         self.selection_on_working_grid = False
-        self.grid_selection_history = np.zeros(shape=(self.grid_height, self.grid_width), dtype=np.int)
+        self.grid_selection_history = np.zeros(shape=(self.grid_height, self.grid_width), dtype=np.int32)
         self.current_task_dims, self.output_size_fixed = [], False
         self.copy_input_to_working_grid = False
 
         self.background_color = 0
 
         self.running_reward = 0
+
+        self.render_mode = render_mode
 
         self.current_task = None
         self.current_demo_task = None
@@ -46,16 +59,19 @@ class ReasoningEnv(gym.Env):
 
         self.done = False
 
+        self.window = None
+        self.canvas = None
+
         self.observation_space = gym.spaces.Dict({
             # Observation has
             # - 3 channels for working grid, selection mask and output image
             # - 10 channels for the colors, 1 for background and one for the selection mask
             "real_obs": gym.spaces.Tuple(
-                [gym.spaces.Box(0, 10, shape=(self.grid_height, self.grid_width, 3), dtype=np.int),
-                 gym.spaces.Box(0, 900, shape=(self.countDim,), dtype=np.int)]),
-            "action_mask": gym.spaces.Tuple([gym.spaces.Box(0, 1, shape=(19,), dtype=np.int),
-                                             gym.spaces.Box(0, 1, shape=(9, 30), dtype=np.int),
-                                             gym.spaces.Box(0, 1, shape=(9, 30), dtype=np.int)])
+                [gym.spaces.Box(0, 10, shape=(self.grid_height, self.grid_width, 3), dtype=np.int32),
+                 gym.spaces.Box(0, 900, shape=(self.countDim,), dtype=np.int32)]),
+            "action_mask": gym.spaces.Tuple([gym.spaces.Box(0, 1, shape=(19,), dtype=np.int32),
+                                             gym.spaces.Box(0, 1, shape=(9, 30), dtype=np.int32),
+                                             gym.spaces.Box(0, 1, shape=(9, 30), dtype=np.int32)])
         })
         # Action Space
         #   0 - copy: (30x, 30y) - 0 means current object, else bounding box
@@ -102,11 +118,14 @@ class ReasoningEnv(gym.Env):
         self.running_reward = 0
 
         a1_mask = self.primary_action_mask()
-        a2_mask, a3_mask = self.dependant_action_masks()
+        a2_mask, a3_mask = self.dependent_action_masks()
+
+        if self.render_mode == "human":
+            self.render()
 
         return {"real_obs": tuple([np.dstack([self.grid, self.selection_mask, self.working_output_grid]),
                                    self.count_memory]),
-                "action_mask": tuple([a1_mask, a2_mask, a3_mask])}
+                "action_mask": tuple([a1_mask, a2_mask, a3_mask])}, {}
 
     def set_current_task(self, task):
         self.current_task = task
@@ -116,7 +135,7 @@ class ReasoningEnv(gym.Env):
         for task in self.current_task['train']:
             self.current_task_dims.append((np.array(task['input']).shape, np.array(task['output']).shape))
             task['input'], task['output'], colmap, inv_colmap, demo_utc = self.squash_colors(
-                [np.array(task['input'], dtype=np.int), np.array(task['output'], dtype=np.int)])
+                [np.array(task['input'], dtype=np.int32), np.array(task['output'], dtype=np.int32)])
             self.current_demo_colormaps.append(colmap)
             self.current_demo_inv_colormaps.append(inv_colmap)
             unique_test_colors.append(demo_utc)
@@ -131,7 +150,7 @@ class ReasoningEnv(gym.Env):
         unique_test_colors = np.unique(chain.from_iterable(unique_test_colors))
         for task in self.current_task['test']:
             task['input'], colmap, inv_colmap = self.squash_colors(
-                [np.array(task['input'], dtype=np.int)], single_input=True, test_unique_colors=unique_test_colors)
+                [np.array(task['input'], dtype=np.int32)], single_input=True, test_unique_colors=unique_test_colors)
             self.current_test_colormaps.append(colmap)
             self.current_test_inv_colormaps.append(inv_colmap)
 
@@ -200,7 +219,7 @@ class ReasoningEnv(gym.Env):
         reward = 0.0
 
         a1_mask = self.primary_action_mask()
-        a2_mask, a3_mask = self.dependant_action_masks()
+        a2_mask, a3_mask = self.dependent_action_masks()
 
         # the core coord is a random cell (usually top-left) from the selected element, serves as a local coordiante
         # base (0,0) which offset is added to
@@ -305,14 +324,17 @@ class ReasoningEnv(gym.Env):
             self.selection_on_working_grid = True
 
         a1_mask = self.primary_action_mask()
-        a2_mask, a3_mask = self.dependant_action_masks()
+        a2_mask, a3_mask = self.dependent_action_masks()
 
         self.running_reward += reward
         score = self.running_reward if self.done else 0
 
+        if self.render_mode == "human":
+            self.render()
+
         return {"real_obs": tuple([np.dstack([self.grid, self.selection_mask, self.working_output_grid]),
                                    self.count_memory]), "action_mask": tuple([a1_mask, a2_mask, a3_mask])}, \
-               score, self.done, {}
+               score, self.done, False, {}
 
     # def set_state(self, state):
     #     self.running_reward = state[1]
@@ -350,7 +372,7 @@ class ReasoningEnv(gym.Env):
             # self.grid[elem_idx_pair[0], elem_idx_pair[1]] = self.background_color # remove elements from working grid
             self.grid_selection_history[elem_idx_pair[0], elem_idx_pair[1]] = 1
 
-        self.selection_mask = np.zeros(shape=(self.grid_height, self.grid_width), dtype=np.int)
+        self.selection_mask = np.zeros(shape=(self.grid_height, self.grid_width), dtype=np.int32)
         np.put(self.selection_mask, selected_element, 1)
 
 
@@ -376,7 +398,7 @@ class ReasoningEnv(gym.Env):
 
         return return_action_mask
 
-    def dependant_action_masks(self):
+    def dependent_action_masks(self):
         a2_mask, a3_mask = np.zeros(shape=(19, 30)), np.zeros(shape=(19, 30))
         # if 1-10, 12:remove, 17:none, 18:done, no followup action allowe
         top_bound, bottom_bound, left_bound, right_bound = self.get_bounds()
@@ -389,8 +411,34 @@ class ReasoningEnv(gym.Env):
         return a2_mask, a3_mask
 
     def render(self):
-        plot_single_image(self.grid, padded=True)
-        plot_single_image(self.working_output_grid, padded=True)
+        #plot_single_image(self.grid, padded=True)
+        #plot_single_image(self.working_output_grid, padded=True)
+
+        if self.window is None:
+            self.window = tk.Tk()
+            self.window.title("Reasoning Environment")
+            self.canvas = tk.Canvas(self.window, width=600, height=600)
+            self.canvas.pack()
+
+        self.canvas.delete("all")
+        tile_size = 20
+        for i in range(self.grid_height):
+            for j in range(self.grid_width):
+                color = self.working_output_grid[i, j]
+                self.canvas.create_rectangle(j * tile_size, i * tile_size, (j + 1) * tile_size, (i + 1) * tile_size,
+                                             fill=colors.to_hex(padded_cmap.colors[color.astype(np.int16)]), outline="black")
+
+        if self.render_mode == 'rgb_array':
+            self.window.update()
+            self.window.after(1000)
+            self.window.update_idletasks()
+            self.window.update()
+            self.canvas.postscript(file="test.ps", colormode='color')
+            self.window.update_idletasks()
+            self.window.update()
+        elif self.render_mode == "human":
+            self.window.update_idletasks()
+            self.window.update()
 
     def pad_array(self, array):
         y_pad = self.grid_height - array.shape[0]

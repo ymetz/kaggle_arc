@@ -1,5 +1,4 @@
-import gym
-from gym.spaces import Discrete, Tuple
+import gymnasium as gym
 import random
 from pathlib import Path
 import os

@@ -13,7 +13,7 @@ from plot_functions import plot_task, plot_single_image
 
 import numpy as np
 
-data_path = Path('/home/yannick/Documents/abstract_reasoning/abstraction-and-reasoning-challenge/')
+data_path = Path('.')
 training_path = data_path / 'training'
 evaluation_path = data_path / 'evaluation'
 test_path = data_path / 'test'
@@ -49,7 +49,7 @@ for file in os.listdir(training_path):
         tasks.append(json.load(f))
 
 training_iterations = 50
-env = ReasoningEnv()
+env = ReasoningEnv(render_mode="human")
 env.set_current_task(tasks[0])
 env.reset()
 
@@ -61,7 +61,7 @@ for iteration in range(training_iterations):
         start_time = time.time()
         env.set_current_task(task)
         for _ in range(5):
-            obs = env.reset()
+            obs, _ = env.reset()
             for _ in range(500):
                 primary_action_mask = obs["action_mask"][0]
                 primary_action = np.random.choice(np.argwhere(primary_action_mask == 1).flatten())
@@ -69,9 +69,9 @@ for iteration in range(training_iterations):
                 if np.count_nonzero(secondary_action_mask) > 0 and np.count_nonzero(third_action_mask) > 0:
                     secondary_action = np.random.choice(np.argwhere(secondary_action_mask == 1).flatten())
                     third_action = np.random.choice(np.argwhere(third_action_mask == 1).flatten())
-                obs, rew, done, _ = env.step([primary_action, secondary_action, third_action])
+                obs, rew, done, truntated, _ = env.step([primary_action, secondary_action, third_action])
                 if env.done:
-                    obs = env.reset()
+                    obs, _ = env.reset()
         print(i, " time for task:", time.time()-start_time, "s")
     break
 
