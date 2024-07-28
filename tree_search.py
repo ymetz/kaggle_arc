@@ -43,7 +43,7 @@ class Node:
         self.parent.child_total_visits[self.action]
 
     def best_action(self):
-        child_score =
+        child_score = self.child_total_value / (1 + self.child_number_visits)
         masked_child_score = child_score
         masked_child_score[~self.valid_actions] = -np.inf
         return np.argmax(masked_child_score)

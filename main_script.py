@@ -11,7 +11,7 @@ from plot_functions import plot_task, plot_single_image
 
 import numpy as np
 
-data_path = Path('C:\\Users\\Yannick\\PycharmProjects\\abstract_reasoning\\abstraction-and-reasoning-challenge')
+data_path = Path('.')
 training_path = data_path / 'training'
 evaluation_path = data_path / 'evaluation'
 test_path = data_path / 'test'

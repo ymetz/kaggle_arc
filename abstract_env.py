@@ -5,8 +5,6 @@ import math
 from itertools import chain
 from matplotlib import colors
 
-from copy import deepcopy
-
 action_mapping = {0: "copy", 1: "recolor", 2: "remove", 3: "count", 4: "move", 5: "mirror",
                   6: "resize_output_grid", 7: "none", 8: "done"}
 
